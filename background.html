@@ -1,0 +1,255 @@
+<html>
+<head>
+<script>
+//
+// Based on Chrome 'Gmail checker' example
+//
+var animationFrames = 36;
+var animationSpeed = 10; // ms
+var canvas;
+var canvasContext;
+var loggedInImage;
+var pollIntervalMin = 1000 * 60 * 15;  // 15 minute
+var pollIntervalMax = 1000 * 60 * 60;  // 1 hour
+var requestFailureCount = 0;  // used for exponential backoff
+var requestTimeout = 1000 * 5;  // 5 seconds
+var rotation = 0;
+var billAmount = -1;
+var loadingAnimation = new LoadingAnimation();
+
+var chtBillBaseUrl = "http://bms.emome.net/proxy/mbms/service.jsp";
+
+function getChtBillUrl() {
+  var url = chtBillBaseUrl + "?leftmenu=bill&url=notPayBill.jsp";
+  return url;
+}
+
+function isChtBillUrl(url) {
+  var chtBill = chtBillBaseUrl;
+  if (url.indexOf(chtBill) != 0)
+    return false;
+
+  return url.length == chtBillBaseUrl.length || url[chtBill.length] == '?' ||
+                       url[chtBill.length] == '#';
+}
+
+// A "loading" animation displayed while we wait for the first response from
+// CHT(emome). This animates the badge text with a dot that cycles from left to
+// right.
+function LoadingAnimation() {
+  this.timerId_ = 0;
+  this.maxCount_ = 8;  // Total number of states in animation
+  this.current_ = 0;  // Current state
+  this.maxDot_ = 4;  // Max number of dots in animation
+}
+
+LoadingAnimation.prototype.paintFrame = function() {
+  var text = "";
+  for (var i = 0; i < this.maxDot_; i++) {
+    text += (i == this.current_) ? "." : " ";
+  }
+  if (this.current_ >= this.maxDot_)
+    text += "";
+
+  chrome.browserAction.setBadgeText({text:text});
+  this.current_++;
+  if (this.current_ == this.maxCount_)
+    this.current_ = 0;
+}
+
+LoadingAnimation.prototype.start = function() {
+  if (this.timerId_)
+    return;
+
+  var self = this;
+  this.timerId_ = window.setInterval(function() {
+    self.paintFrame();
+  }, 100);
+}
+
+LoadingAnimation.prototype.stop = function() {
+  if (!this.timerId_)
+    return;
+
+  window.clearInterval(this.timerId_);
+  this.timerId_ = 0;
+}
+
+
+chrome.tabs.onUpdated.addListener(function(tabId, changeInfo) {
+  if (changeInfo.url && isChtBillUrl(changeInfo.url)) {
+    getChtBillAmount(function(count) {
+      updateChtBillAmount(count);
+    });
+  }
+});
+
+
+function init() {
+  canvas = document.getElementById('canvas');
+  loggedInImage = document.getElementById('logged_in');
+  canvasContext = canvas.getContext('2d');
+
+  chrome.browserAction.setBadgeBackgroundColor({color:[0, 0, 24, 255]});
+  chrome.browserAction.setIcon({path: "phone.png"});
+  loadingAnimation.start();
+
+  startRequest();
+}
+
+function scheduleRequest() {
+  var randomness = Math.random() * 2;
+  var exponent = Math.pow(2, requestFailureCount);
+  var delay = Math.min(randomness * pollIntervalMin * exponent,
+                       pollIntervalMax);
+  delay = Math.round(delay);
+
+  window.setTimeout(startRequest, delay);
+}
+
+// ajax stuff
+function startRequest() {
+  getChtBillAmount(
+    function(count) {
+      loadingAnimation.stop();
+      updateChtBillAmount(count);
+      scheduleRequest();
+    },
+    function() {
+      loadingAnimation.stop();
+      showLoggedOut();
+      scheduleRequest();
+    }
+  );
+}
+
+function getChtBillAmount(onSuccess, onError) {
+  var xhr = new XMLHttpRequest();
+  var abortTimerId = window.setTimeout(function() {
+    xhr.abort();  // synchronously calls onreadystatechange
+  }, requestTimeout);
+
+  function handleSuccess(count) {
+    requestFailureCount = 0;
+    window.clearTimeout(abortTimerId);
+    if (onSuccess)
+      onSuccess(count);
+  }
+
+  function handleError() {
+    ++requestFailureCount;
+    window.clearTimeout(abortTimerId);
+    if (onError)
+      onError();
+  }
+
+  try {
+    xhr.onreadystatechange = function(){
+      if (xhr.readyState != 4)
+        return;
+
+      // well, pretty tricky here.
+      if (xhr.responseText) {
+        var amountRegExp = new RegExp("<td>([0-9]+)</td>\r\n</tr>\r\n<tr align=\"center\" bgcolor=\"white\">", "m");
+        var amount = amountRegExp.exec(xhr.responseText);
+
+        if (amount.length > 0) {
+          handleSuccess(amount[1]);
+          return;
+        } else {
+          console.error("Error: page retrieved, but no bill total amount" +
+                        "found");
+        }
+      }
+
+      handleError();
+    }
+
+    xhr.onerror = function(error) {
+      handleError();
+    }
+
+    xhr.open("GET", getChtBillUrl(), true);
+    xhr.send(null);
+  } catch(e) {
+    console.error("CHT exception: " + e);
+    handleError();
+  }
+}
+
+function updateChtBillAmount(count) {
+  if (billAmount != count) {
+    billAmount = count;
+    animateFlip();
+  }
+}
+
+
+function ease(x) {
+  return (1-Math.sin(Math.PI/2+x*Math.PI))/2;
+}
+
+function animateFlip() {
+  rotation += 1/animationFrames;
+  drawIconAtRotation();
+
+  if (rotation <= 1) {
+    setTimeout("animateFlip()", animationSpeed);
+  } else {
+    rotation = 0;
+    drawIconAtRotation();
+    chrome.browserAction.setBadgeText({
+      text: billAmount != "0" ? billAmount : ""
+    });
+    chrome.browserAction.setBadgeBackgroundColor({color:[0, 0, 24, 255]});
+  }
+}
+
+function showLoggedOut() {
+  billAmount = -1;
+  chrome.browserAction.setIcon({path:"phone.png"});
+  chrome.browserAction.setBadgeBackgroundColor({color:[190, 190, 190, 230]});
+  chrome.browserAction.setBadgeText({text:"?"});
+}
+
+function drawIconAtRotation() {
+  canvasContext.save();
+  canvasContext.clearRect(0, 0, canvas.width, canvas.height);
+  canvasContext.translate(
+      Math.ceil(canvas.width/2),
+      Math.ceil(canvas.height/2));
+  canvasContext.rotate(2*Math.PI*ease(rotation));
+  canvasContext.drawImage(loggedInImage,
+      -Math.ceil(canvas.width/2),
+      -Math.ceil(canvas.height/2));
+  canvasContext.restore();
+
+  chrome.browserAction.setIcon({imageData:canvasContext.getImageData(0, 0,
+      canvas.width,canvas.height)});
+}
+
+function goToChtBillPage() {
+  chrome.tabs.getAllInWindow(undefined, function(tabs) {
+    for (var i = 0, tab; tab = tabs[i]; i++) {
+      if (tab.url && isChtBillUrl(tab.url)) {
+        chrome.tabs.update(tab.id, {selected: true});
+        return;
+      }
+    }
+    chrome.tabs.create({url: getChtBillUrl()});
+  });
+}
+
+// Called when the user clicks on the browser action.
+chrome.browserAction.onClicked.addListener(function(tab) {
+  goToChtBillPage();
+});
+
+</script>
+</head>
+<body onload="init()">
+<img id="logged_in" src="phone.png">
+<canvas id="canvas" width="19" height="19">
+</body>
+</html>
+

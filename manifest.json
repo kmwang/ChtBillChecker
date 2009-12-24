@@ -1,0 +1,13 @@
+{
+    "name": "CHT Bill Checker",
+    "description": "Monitor your CHT phone bill and control your budget!",
+    "version": "1",
+    "browser_action": { "default_title": "" },
+    "icons": { "48": "phone.png" },
+    "background_page": "background.html",
+    "permissions": [
+        "tabs",
+        "http://bms.emome.net/",
+        "http://bms.emome.net/proxy/mbms/service.jsp?leftmenu=bill&url=notPayBill.jsp"
+    ]
+}
